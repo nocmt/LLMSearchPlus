@@ -14,6 +14,9 @@ app = FastAPI()
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL")
 GOOGLE_CX = os.getenv("GOOGLE_CX")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+SEARXNG_URL = os.getenv("SEARXNG_URL")  # 添加 SearXNG URL 环境变量
+DEFAULT_SEARCH_ENGINE = os.getenv("SEARCH_ENGINE", "google")   # 默认使用 google，可选 "google" 或 "searxng"
+# DEFAULT_SEARCH_ENGINE = os.getenv("SEARCH_ENGINE", "searxng")
 
 
 @app.api_route("/v1/models", methods=["GET","OPTIONS"])
@@ -96,6 +99,18 @@ async def post_embeddings(request: Request):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+async def perform_search(query, engine=None):
+    """
+    统一的搜索函数，根据指定的引擎选择搜索方式
+    """
+    search_engine = engine or DEFAULT_SEARCH_ENGINE
+    if search_engine.lower() == "google":
+        return await google_search(query)
+    elif search_engine.lower() == "searxng":
+        return await searxng_search(query)
+    else:
+        raise ValueError(f"不支持的搜索引擎: {search_engine}")
+
 @app.api_route("/v1/chat/completions", methods=["POST"])
 async def chat_completions(request: Request):
     client = httpx.AsyncClient()
@@ -106,7 +121,7 @@ async def chat_completions(request: Request):
         modified_body = inject_tool_definitions(body)
         stream = modified_body.get("stream", False)
         
-        print("发送到 LM Studio Studio Studio Studio 的请求体:", json.dumps(modified_body, ensure_ascii=False, indent=2))
+        print("发送到 LM Studio 的请求体:", json.dumps(modified_body, ensure_ascii=False, indent=2))
         
         # 如果是流式请求，先关闭它以处理工具调用
         if stream:
@@ -117,13 +132,13 @@ async def chat_completions(request: Request):
         if response.status_code != 200:
             raise HTTPException(
                 status_code=response.status_code,
-                detail=f"LM Studio Studio Studio API error: {response.text}"
+                detail=f"LM Studio API error: {response.text}"
             )
         
         response_data = response.json()
-        print("LM Studio Studio Studio 原始返回数据:", json.dumps(response_data, ensure_ascii=False, indent=2))
+        print("LM Studio 原始返回数据:", json.dumps(response_data, ensure_ascii=False, indent=2))
         
-        # 检查是否包含工具调用（标准格式）
+        # 检查是否包含工具调用
         has_tool_calls = (
             "choices" in response_data 
             and response_data["choices"] 
@@ -131,7 +146,6 @@ async def chat_completions(request: Request):
             and "tool_calls" in response_data["choices"][0]["message"]
         )
         
-        # 检查是否包含函数调用标记（特殊格式）
         has_function_calling = (
             "choices" in response_data 
             and response_data["choices"] 
@@ -142,16 +156,18 @@ async def chat_completions(request: Request):
         
         if has_tool_calls or has_function_calling:
             try:
-                # 提取查询参数
                 query = None
                 tool_call_id = None
+                search_engine = None
                 
                 if has_tool_calls:
                     print("检测到标准工具调用格式")
                     tool_call = response_data["choices"][0]["message"]["tool_calls"][0]
                     tool_call_id = tool_call["id"]
+                    function_name = tool_call["function"]["name"]
                     args = json.loads(tool_call["function"]["arguments"])
                     query = args["query"]
+                    search_engine = function_name.replace("_search", "")
                 elif has_function_calling:
                     print("检测到特殊函数调用格式")
                     content = response_data["choices"][0]["message"]["content"]
@@ -159,9 +175,12 @@ async def chat_completions(request: Request):
                     function_data = json.loads(json_str)
                     query = function_data["params"]["query"]
                     tool_call_id = f"call_{str(hash(content))[:8]}"
+                    search_engine = DEFAULT_SEARCH_ENGINE
+                
+                print(f"使用搜索引擎: {search_engine}")  # 添加调试日志
                 
                 if query:
-                    search_results = await google_search(query)
+                    search_results = await perform_search(query, search_engine)
                     print(f"搜索结果: {search_results}")
                     
                     # 构建新的消息列表
@@ -170,7 +189,7 @@ async def chat_completions(request: Request):
                         "id": tool_call_id,
                         "type": "function",
                         "function": {
-                            "name": "google_search",
+                            "name": f"{search_engine}_search",
                             "arguments": json.dumps({"query": query}, ensure_ascii=False)
                         }
                     }
@@ -184,17 +203,17 @@ async def chat_completions(request: Request):
                         "role": "tool",
                         "content": search_results,
                         "tool_call_id": tool_call_id,
-                        "name": "google_search"
+                        "name": f"{search_engine}_search"
                     })
                     
                     # 构建新的请求
                     new_request = {
                         "model": modified_body.get("model", "gpt-3.5-turbo"),
                         "messages": new_messages,
-                        "stream": stream  # 恢复原始的流式设置
+                        "stream": stream
                     }
                     
-                    print("发送最终请求到 LM Studio Studio Studio...")
+                    print("发送最终请求到 LM Studio...")
                     final_response = await client.post(
                         f"{OPENAI_BASE_URL}/chat/completions",
                         json=new_request,
@@ -214,21 +233,27 @@ async def chat_completions(request: Request):
                     else:
                         raise HTTPException(
                             status_code=final_response.status_code,
-                            detail=f"LM Studio Studio Studio final response error: {final_response.text}"
+                            detail=f"LM Studio final response error: {final_response.text}"
                         )
             except Exception as e:
                 print(f"处理工具调用时发生错误: {str(e)}")
                 print(f"错误堆栈: {traceback.format_exc()}")
                 raise HTTPException(status_code=500, detail=str(e))
         
-        # 如果不是工具调用，且是流式请求，返回流式响应
-        if stream:
-            return StreamingResponse(
-                response.aiter_bytes(),
-                media_type="text/event-stream"
-            )
-            
-        return response_data
+        # 修改这部分：确保在没有工具调用时也能正确返回响应
+        if not (has_tool_calls or has_function_calling):
+            if stream:
+                # 重新发送流式请求
+                stream_response = await client.post(
+                    url,
+                    json={**modified_body, "stream": True},
+                    timeout=60.0
+                )
+                return StreamingResponse(
+                    stream_response.aiter_bytes(),
+                    media_type="text/event-stream"
+                )
+            return response_data
         
     except Exception as e:
         print(f"发生异常: {str(e)}")
@@ -239,20 +264,39 @@ async def chat_completions(request: Request):
 
 
 def inject_tool_definitions(original_body):
-    tools = [{
-        "type": "function",
-        "function": {
-            "name": "google_search",
-            "description": "当需要获取实时信息，如当前日期、天气、新闻、产品信息等时使用谷歌搜索",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "搜索关键词"}
-                },
-                "required": ["query"]
+    tools = []
+    
+    # 根据搜索引擎类型添加对应的工具
+    if DEFAULT_SEARCH_ENGINE.lower() == "google":
+        tools.append({
+            "type": "function",
+            "function": {
+                "name": "google_search",
+                "description": "使用谷歌搜索获取实时信息，如当前日期、天气、新闻、产品信息等",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "搜索关键词"}
+                    },
+                    "required": ["query"]
+                }
             }
-        }
-    }]
+        })
+    elif DEFAULT_SEARCH_ENGINE.lower() == "searxng":
+        tools.append({
+            "type": "function",
+            "function": {
+                "name": "searxng_search",
+                "description": "使用 SearXNG 搜索引擎获取信息，支持多个搜索引擎的聚合结果",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "搜索关键词"}
+                    },
+                    "required": ["query"]
+                }
+            }
+        })
     
     original_body.setdefault("tools", [])
     original_body["tools"].extend(tools)
@@ -324,7 +368,7 @@ async def handle_tool_calls(response_data, original_request):
 
     return response_data
 
-async def google_search(query, num=3):
+async def google_search(query, num=5):
     print(f"开始执行 Google 搜索，查询词：{query}")
     try:
         url = f"https://www.googleapis.com/customsearch/v1?key={GOOGLE_API_KEY}&q={query}&cx={GOOGLE_CX}&num={num}"
@@ -364,6 +408,51 @@ async def google_search(query, num=3):
         print(f"错误：{error_msg}")
         print(f"异常类型：{type(e)}")
         print(f"异常详情：{traceback.format_exc()}")
+        return error_msg
+
+async def searxng_search(query, num=5):
+    print(f"开始执行 SearXNG 搜索，查询词：{query}")
+    try:
+        params = {
+            'q': query,
+            'format': 'json',
+            'pageno': 1,
+            'num_results': num
+        }
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.get(SEARXNG_URL + "/search", params=params)
+            print(f"API 响应状态码: {response.status_code}")
+            
+            if response.status_code == 200:
+                data = response.json()
+                results = []
+                
+                if 'results' in data:
+                    print(f"找到搜索结果数量: {len(data['results'])}")
+                    for i, item in enumerate(data['results'][:num], 1):
+                        result = {
+                            "title": item.get("title"),
+                            "link": item.get("url"),
+                            "snippet": item.get("content")
+                        }
+                        results.append(result)
+                        print(f"处理第 {i} 条结果: {result['title']}")
+                else:
+                    print("警告：API 响应中没有找到 'results' 键")
+                
+                final_result = json.dumps(results, ensure_ascii=False)
+                print(f"最终返回结果长度: {len(final_result)} 字符")
+                return final_result
+            else:
+                error_msg = f"搜索请求失败，状态码: {response.status_code}"
+                print(error_msg)
+                return error_msg
+    except Exception as e:
+        error_msg = f"搜索过程发生异常：{str(e)}"
+        print(f"错误：{error_msg}")
+        print(f"异常类型：{type(e)}")
+        print(f"异常堆栈：{traceback.format_exc()}")
         return error_msg
     
 if __name__ == "__main__":
