@@ -1,8 +1,10 @@
-node_modules
-.vercel
 .env
-wrangler.toml
-.wrangler
+*.log
+*.pyc
 .vscode
 __pycache__
 .cursor
+searxng
+docker-compose.yml
+Docker部署
+Dockerfile

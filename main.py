@@ -15,12 +15,11 @@ load_dotenv() # 加载环境变量
 
 app = FastAPI()
 
-OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL")
-GOOGLE_CX = os.getenv("GOOGLE_CX")
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-SEARXNG_URL = os.getenv("SEARXNG_URL")  # 添加 SearXNG URL 环境变量
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "http://localhost:1234")
+GOOGLE_CX = os.getenv("GOOGLE_CX", "")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
+SEARXNG_URL = os.getenv("SEARXNG_URL", "http://localhost:8101")  # 添加 SearXNG URL 环境变量
 DEFAULT_SEARCH_ENGINE = os.getenv("SEARCH_ENGINE", "google")   # 默认使用 google，可选 "google" 或 "searxng"
-# DEFAULT_SEARCH_ENGINE = os.getenv("SEARCH_ENGINE", "searxng")
 
 
 @app.api_route("/v1/models", methods=["GET","OPTIONS"])
