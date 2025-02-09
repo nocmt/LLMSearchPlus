@@ -7,6 +7,10 @@ import uvicorn
 import traceback
 import os
 from dotenv import load_dotenv
+from gne import GeneralNewsExtractor
+from bs4 import BeautifulSoup
+import asyncio
+from urllib.parse import urlparse
 load_dotenv() # 加载环境变量
 
 app = FastAPI()
@@ -39,7 +43,7 @@ async def get_models(request: Request):
                 headers=dict(response.headers)
             )
     except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="LM Studio Studio Studio Studio API timeout")
+        raise HTTPException(status_code=504, detail="LM Studio API timeout")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -67,7 +71,7 @@ async def post_completions(request: Request):
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid JSON body")
     except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="LM Studio Studio Studio Studio API timeout")
+        raise HTTPException(status_code=504, detail="LM Studio API timeout")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -95,7 +99,7 @@ async def post_embeddings(request: Request):
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid JSON body")
     except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="LM Studio Studio Studio Studio API timeout")
+        raise HTTPException(status_code=504, detail="LM Studio API timeout")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -118,7 +122,56 @@ async def chat_completions(request: Request):
     
     try:
         body = await request.json()
+        
+        # 检查是否包含强制搜索的关键词
+        force_search = False
+        if "messages" in body and body["messages"]:
+            last_message = body["messages"][-1]
+            if last_message.get("role") == "user":
+                content = last_message.get("content", "")
+                if isinstance(content, str):
+                    # 检查是否包含强制搜索标记（比如 #search 或 /search）
+                    if "#search" in content.lower() or "/search" in content.lower():
+                        force_search = True
+                        # 移除搜索标记
+                        content = content.replace("#search", "").replace("/search", "").strip()
+                        body["messages"][-1]["content"] = content
+        
         modified_body = inject_tool_definitions(body)
+        
+        # 如果强制搜索，直接构造搜索请求
+        if force_search:
+            search_query = body["messages"][-1]["content"]
+            search_results = await perform_search(search_query)
+            
+            # 构建包含搜索结果的新消息列表
+            new_messages = body["messages"].copy()
+            tool_call_id = f"call_{str(hash(search_query))[:8]}"
+            
+            # 添加工具调用消息
+            new_messages.append({
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": tool_call_id,
+                    "type": "function",
+                    "function": {
+                        "name": f"{DEFAULT_SEARCH_ENGINE}_search",
+                        "arguments": json.dumps({"query": search_query}, ensure_ascii=False)
+                    }
+                }]
+            })
+            
+            # 添加搜索结果消息
+            new_messages.append({
+                "role": "tool",
+                "content": search_results,
+                "tool_call_id": tool_call_id,
+                "name": f"{DEFAULT_SEARCH_ENGINE}_search"
+            })
+            
+            modified_body["messages"] = new_messages
+        
         stream = modified_body.get("stream", False)
         
         print("发送到 LM Studio 的请求体:", json.dumps(modified_body, ensure_ascii=False, indent=2))
@@ -287,7 +340,7 @@ def inject_tool_definitions(original_body):
             "type": "function",
             "function": {
                 "name": "searxng_search",
-                "description": "使用 SearXNG 搜索引擎获取信息，支持多个搜索引擎的聚合结果",
+                "description": "使用 SearXNG 搜索引擎获取信息，如当前日期、天气、新闻、产品信息等",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -344,7 +397,7 @@ async def handle_tool_calls(response_data, original_request):
                     "temperature": original_request.get("temperature", 0.7)
                 }
                 
-                print("发送最终请求到 LM Studio Studio Studio...")
+                print("发送最终请求到 LM Studio...")
                 # 发送最终请求
                 async with httpx.AsyncClient() as client:
                     final_response = await client.post(
@@ -355,11 +408,11 @@ async def handle_tool_calls(response_data, original_request):
                     
                     if final_response.status_code == 200:
                         result = final_response.json()
-                        print(f"LM Studio Studio Studio 最终响应: {json.dumps(result, ensure_ascii=False)}")
+                        print(f"LM Studio 最终响应: {json.dumps(result, ensure_ascii=False)}")
                         return result
                     else:
-                        print(f"LM Studio Studio Studio 响应错误: {final_response.status_code}")
-                        return {"error": f"LM Studio Studio Studio error: {final_response.text}"}
+                        print(f"LM Studio 响应错误: {final_response.status_code}")
+                        return {"error": f"LM Studio error: {final_response.text}"}
                         
             except Exception as e:
                 print(f"工具调用处理错误: {str(e)}")
@@ -368,6 +421,87 @@ async def handle_tool_calls(response_data, original_request):
 
     return response_data
 
+async def fetch_and_parse_url(url, client):
+    """
+    抓取并解析单个URL的内容
+    """
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        response = await client.get(url, headers=headers, timeout=10.0, follow_redirects=True, verify=False)
+        
+        if response.status_code != 200:
+            return None
+
+        # 使用 GNE 提取正文
+        extractor = GeneralNewsExtractor()
+        html = response.text
+        result = extractor.extract(html)
+        
+        # 提取正文内容
+        content = result.get('content', '')
+        if not content:
+            # 如果GNE提取失败，尝试使用BeautifulSoup提取所有正文
+            soup = BeautifulSoup(html, 'html.parser')
+            # 移除脚本和样式元素
+            for script in soup(["script", "style"]):
+                script.decompose()
+            content = soup.get_text(separator='\n', strip=True)
+
+        # 清理和限制内容长度
+        content = ' '.join(content.split())
+        content = content[:2000]  # 限制长度
+        
+        return {
+            'url': url,
+            'content': content,
+            'title': result.get('title', '')
+        }
+    except Exception as e:
+        print(f"抓取URL {url} 时出错: {str(e)}")
+        return None
+
+async def enrich_search_results(results):
+    """
+    增强搜索结果，添加网页正文内容
+    """
+    if isinstance(results, str):
+        results = json.loads(results)
+    
+    async with httpx.AsyncClient() as client:
+        tasks = []
+        for result in results:
+            url = result.get('link')
+            if url and is_valid_url(url):
+                tasks.append(fetch_and_parse_url(url, client))
+        
+        # 并发抓取所有URL
+        enriched_contents = await asyncio.gather(*tasks)
+        
+        # 合并结果
+        for i, content in enumerate(enriched_contents):
+            if content:
+                results[i]['extracted_content'] = content.get('content', '')
+                
+    return json.dumps(results, ensure_ascii=False)
+
+def is_valid_url(url):
+    """
+    检查URL是否有效且适合抓取
+    """
+    try:
+        parsed = urlparse(url)
+        # 排除不需要的文件类型
+        excluded_extensions = ('.pdf', '.doc', '.docx', '.xls', '.xlsx', '.zip', '.rar')
+        return all([
+            parsed.scheme in ('http', 'https'),
+            not any(url.lower().endswith(ext) for ext in excluded_extensions)
+        ])
+    except:
+        return False
+
+# 修改 google_search 函数
 async def google_search(query, num=5):
     print(f"开始执行 Google 搜索，查询词：{query}")
     try:
@@ -379,9 +513,6 @@ async def google_search(query, num=5):
         
         if response.status_code == 200:
             data = response.json()
-            print(f"API 返回数据类型: {type(data)}")
-            print(f"API 返回数据键值: {list(data.keys())}")
-            
             results = []
             if 'items' in data:
                 print(f"找到搜索结果数量: {len(data['items'])}")
@@ -393,12 +524,11 @@ async def google_search(query, num=5):
                     }
                     results.append(result)
                     print(f"处理第 {i} 条结果: {result['title']}")
-            else:
-                print("警告：API 响应中没有找到 'items' 键")
             
-            final_result = json.dumps(results, ensure_ascii=False)
-            print(f"最终返回结果长度: {len(final_result)} 字符")
-            return final_result
+            # 增强搜索结果
+            enriched_results = await enrich_search_results(results)
+            print(f"完成内容增强，返回结果")
+            return enriched_results
         else:
             error_msg = f"搜索请求失败，状态码: {response.status_code}"
             print(error_msg)
@@ -406,11 +536,11 @@ async def google_search(query, num=5):
     except Exception as e:
         error_msg = f"搜索过程发生异常：{str(e)}"
         print(f"错误：{error_msg}")
-        print(f"异常类型：{type(e)}")
-        print(f"异常详情：{traceback.format_exc()}")
+        print(f"异常堆栈：{traceback.format_exc()}")
         return error_msg
 
-async def searxng_search(query, num=5):
+# 同样修改 searxng_search 函数
+async def searxng_search(query, num=10):
     print(f"开始执行 SearXNG 搜索，查询词：{query}")
     try:
         params = {
@@ -438,12 +568,11 @@ async def searxng_search(query, num=5):
                         }
                         results.append(result)
                         print(f"处理第 {i} 条结果: {result['title']}")
-                else:
-                    print("警告：API 响应中没有找到 'results' 键")
                 
-                final_result = json.dumps(results, ensure_ascii=False)
-                print(f"最终返回结果长度: {len(final_result)} 字符")
-                return final_result
+                # 增强搜索结果
+                enriched_results = await enrich_search_results(results)
+                print(f"完成内容增强，返回结果")
+                return enriched_results
             else:
                 error_msg = f"搜索请求失败，状态码: {response.status_code}"
                 print(error_msg)
@@ -451,7 +580,6 @@ async def searxng_search(query, num=5):
     except Exception as e:
         error_msg = f"搜索过程发生异常：{str(e)}"
         print(f"错误：{error_msg}")
-        print(f"异常类型：{type(e)}")
         print(f"异常堆栈：{traceback.format_exc()}")
         return error_msg
     
