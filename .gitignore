@@ -1,0 +1,8 @@
+node_modules
+.vercel
+.env
+wrangler.toml
+.wrangler
+.vscode
+__pycache__
+.cursor
