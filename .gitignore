@@ -5,7 +5,5 @@
 __pycache__
 .cursor
 searxng
-docker-compose.yml
-Docker部署
 Dockerfile
 deploy_searxng.sh

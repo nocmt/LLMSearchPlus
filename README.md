@@ -1,40 +1,99 @@
 # LLM Search Plus
 
-Enable LLM to support online search capabilities.
+让LLM支持联网搜索
 
-[中文](./README_CN.md) | [English](./README.md)
+效果：
 
-Currently supported search engines:
+<video src="./演示.mp4" controls></video>
+
+## 联网搜索逻辑：
+
+Chat客户端发送内容中携带 #search、/search、/ss 或 #ss 强制开启联网搜索，否则由模型自行判断。
+
+## 目前支持搜索引擎：
 
 - Google
 - SearxNG
 
-Local model service:
+## 本地模型服务：
 
 - LM Studio
 
-Or other services compatible with OpenAI API.
+或者其他兼容OpenAI API的服务。
 
-### Usage:
+## 使用方法
 
-Prerequisites: Python environment is already installed locally, or you can install it from: https://www.anaconda.com/download/success (Miniconda is recommended)
+### 1. 本地运行
 
-**Clone the project locally:**
+前提：本地已有Python环境，或者自行安装：https://www.anaconda.com/download/success，建议下载Miniconda
+
+**拷贝项目到本地：**
 
     git clone git@github.com:nocmt/LLMSearchPlus.git
 
-**Install dependencies:**
+**安装环境：**
 
-    pip install -r requirements.txt
+    cd LLMSearchPlus && pip install -r requirements.txt && cp .env.template .env
 
-**Copy or rename .env.template to .env, and modify the configurations within.**
+修改.env其中的配置。
 
-**Run:**
+**运行：**
 
     python main.py
 
-For use in Chat clients, set the URL to: http://127.0.0.1:8100 (you may need to add /v1). The setup is similar to using LM Studio, please test to determine the exact configuration needed.
 
-### Online Search Logic:
+在Chat客户端使用，URL填写：http://127.0.0.1:8100，可能要加/v1，和使用LM Studio并没有什么区别，请自行测试确定。
 
-Include #search or /search in your message to force enable online search, otherwise the model will determine whether internet search is needed.
+
+#### 2. 使用Docker部署
+
+**修改配置文件**
+
+docker-compose.yml 文件中，需要修改LM Studio的局域网IP地址，建议和SEARXNG一起部署，这样SEARXNG的地址就是http://searxng:8080，否则需要自行处理容器网络问题。
+
+searxng的配置文件，具体在.searxng目录下，有一个secret_key需要手动生成，根据系统的不同执行命令不一样，只需要生成1次。
+
+Windows 用户可以使用以下 powershell 脚本生成密钥：
+
+```powershell
+$randomBytes = New-Object byte[] 32
+(New-Object Security.Cryptography.RNGCryptoServiceProvider).GetBytes($randomBytes)
+$secretKey = -join ($randomBytes | ForEach-Object { "{0:x2}" -f $_ })
+(Get-Content .searxng/settings.yml) -replace 'ultrasecretkey', $secretKey | Set-Content .searxng/settings.yml
+```
+
+Linux、Mac 用户可以使用以下 bash 脚本生成密钥：
+
+```bash
+
+sed -i "s|ultrasecretkey|$(openssl rand -hex 32)|g" .searxng/settings.yml
+
+```
+
+会自动生成一个32位的密钥，并替换掉ultrasecretkey。
+
+全部修改好后，启动服务：
+
+**启动服务：**
+
+    docker compose up -d
+
+
+**查看日志：**
+
+    docker-compose logs -f
+
+**停止删除服务：**
+
+    docker-compose down
+
+
+## 其他
+
+#### 构建镜像
+
+    docker build -t llm-search-plus .
+
+#### 运行容器
+
+    docker run -d -p 8100:8100 --name llm-search-plus llm-search-plus

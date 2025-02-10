@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    container_name: llm-search-plus
+    ports:
+      - "8100:8100"
+    volumes:
+      - .:/app
+    environment:
+      - TZ=Asia/Shanghai
+      - OPENAI_BASE_URL=http://{这里要修改哈}:1234 # 指向主机的局域网IP，记得LLM要设置允许局域网访问
+      - SEARCH_ENGINE=searxng # 目前只支持google、searxng
+      - NUM_RESULTS = 5
+      - SEARXNG_URL=http://searxng:8080 # SEARCH_ENGINE=searxng时必填
+    networks:
+      - llm_network # 用了桥接，则需要使用容器内端口
+    restart: unless-stopped
+
+  searxng:
+    image: docker.io/searxng/searxng:latest  # SearxNG 的官方镜像
+    container_name: searxng
+    ports:
+      - "8101:8080"
+    networks:
+      - llm_network
+    volumes:
+     - ./.searxng:/etc/searxng:rw
+    environment:
+     - BASE_URL=http://0.0.0.0:8101/
+     - INSTANCE_NAME=searxng
+    restart: unless-stopped
+    # cap_drop: # 第一次用要删除这行。后续为了安全可以添加
+    #   - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "1m"
+        max-file: "1"
+
+networks:
+  llm_network:
+    name: llm_network

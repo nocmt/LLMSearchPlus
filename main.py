@@ -21,7 +21,7 @@ GOOGLE_CX = os.getenv("GOOGLE_CX", "")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
 SEARXNG_URL = os.getenv("SEARXNG_URL", "http://localhost:8101")
 DEFAULT_SEARCH_ENGINE = os.getenv("SEARCH_ENGINE", "google")   # 默认使用 google，可选 "google" 或 "searxng"
-NUM_RESULTS = os.getenv("NUM_RESULTS", 5) 
+NUM_RESULTS = int(os.getenv("NUM_RESULTS", 5))
 
 
 # print(f"当前环境变量：{OPENAI_BASE_URL},{GOOGLE_CX},{GOOGLE_API_KEY},{SEARXNG_URL},{DEFAULT_SEARCH_ENGINE},{NUM_RESULTS}")
@@ -183,7 +183,7 @@ async def chat_completions(request: Request):
         if stream:
             modified_body["stream"] = False
         
-        response = await client.post(url, json=modified_body, timeout=60.0)
+        response = await client.post(url, json=modified_body, timeout=180.0)
         
         if response.status_code != 200:
             raise HTTPException(
