@@ -565,7 +565,11 @@ async def searxng_search(query):
                 
                 if 'results' in data:
                     print(f"找到搜索结果数量: {len(data['results'])}")
-                    for i, item in enumerate(data['results'][:-1], 1):
+                    if len(data['results']) <= NUM_RESULTS: # 避免过多内容导致超时
+                        num = -1
+                    else:
+                        num = NUM_RESULTS
+                    for i, item in enumerate(data['results'][:num], 1):
                         result = {
                             "title": item.get("title"),
                             "link": item.get("url"),
