@@ -11,6 +11,7 @@ from gne import GeneralNewsExtractor
 from bs4 import BeautifulSoup
 import asyncio
 from urllib.parse import urlparse
+
 load_dotenv() # 加载环境变量
 
 app = FastAPI()
@@ -18,11 +19,14 @@ app = FastAPI()
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "http://localhost:1234")
 GOOGLE_CX = os.getenv("GOOGLE_CX", "")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
-SEARXNG_URL = os.getenv("SEARXNG_URL", "http://localhost:8101")  # 添加 SearXNG URL 环境变量
+SEARXNG_URL = os.getenv("SEARXNG_URL", "http://localhost:8101")
 DEFAULT_SEARCH_ENGINE = os.getenv("SEARCH_ENGINE", "google")   # 默认使用 google，可选 "google" 或 "searxng"
+NUM_RESULTS = os.getenv("NUM_RESULTS", 5) 
 
 
-@app.api_route("/v1/models", methods=["GET","OPTIONS"])
+# print(f"当前环境变量：{OPENAI_BASE_URL},{GOOGLE_CX},{GOOGLE_API_KEY},{SEARXNG_URL},{DEFAULT_SEARCH_ENGINE},{NUM_RESULTS}")
+
+@app.api_route("/v1/models", methods=["GET", "OPTIONS"])
 async def get_models(request: Request):
     try:
         async with httpx.AsyncClient() as client:
@@ -31,7 +35,7 @@ async def get_models(request: Request):
             headers.pop("host", None)  # 移除 host 头，避免冲突
             
             response = await client.get(
-                f"{OPENAI_BASE_URL}/models",
+                f"{OPENAI_BASE_URL}/v1/models",
                 headers=headers,
                 timeout=30.0
             )
@@ -56,7 +60,7 @@ async def post_completions(request: Request):
             headers.pop("host", None)
             
             response = await client.post(
-                f"{OPENAI_BASE_URL}/completions",
+                f"{OPENAI_BASE_URL}/v1/completions",
                 headers=headers,
                 json=body,
                 timeout=30.0
@@ -84,7 +88,7 @@ async def post_embeddings(request: Request):
             headers.pop("host", None)
             
             response = await client.post(
-                f"{OPENAI_BASE_URL}/embeddings",
+                f"{OPENAI_BASE_URL}/v1/embeddings",
                 headers=headers,
                 json=body,
                 timeout=30.0
@@ -117,7 +121,7 @@ async def perform_search(query, engine=None):
 @app.api_route("/v1/chat/completions", methods=["POST"])
 async def chat_completions(request: Request):
     client = httpx.AsyncClient()
-    url = f"{OPENAI_BASE_URL}/chat/completions"
+    url = f"{OPENAI_BASE_URL}/v1/chat/completions"
     
     try:
         body = await request.json()
@@ -267,7 +271,7 @@ async def chat_completions(request: Request):
                     
                     print("发送最终请求到 LM Studio...")
                     final_response = await client.post(
-                        f"{OPENAI_BASE_URL}/chat/completions",
+                        f"{OPENAI_BASE_URL}/v1/chat/completions",
                         json=new_request,
                         timeout=60.0
                     )
@@ -400,7 +404,7 @@ async def handle_tool_calls(response_data, original_request):
                 # 发送最终请求
                 async with httpx.AsyncClient() as client:
                     final_response = await client.post(
-                        f"{OPENAI_BASE_URL}/chat/completions",
+                        f"{OPENAI_BASE_URL}/v1/chat/completions",
                         json=new_request,
                         timeout=60.0
                     )
@@ -428,7 +432,7 @@ async def fetch_and_parse_url(url, client):
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
-        response = await client.get(url, headers=headers, timeout=10.0, follow_redirects=True, verify=False)
+        response = await client.get(url, headers=headers, timeout=10.0, follow_redirects=True)
         
         if response.status_code != 200:
             return None
@@ -501,11 +505,11 @@ def is_valid_url(url):
         return False
 
 # 修改 google_search 函数
-async def google_search(query, num=5):
+async def google_search(query):
     print(f"开始执行 Google 搜索，查询词：{query}")
     try:
-        url = f"https://www.googleapis.com/customsearch/v1?key={GOOGLE_API_KEY}&q={query}&cx={GOOGLE_CX}&num={num}"
-        print(f"请求 URL（已隐藏敏感信息）: https://www.googleapis.com/customsearch/v1?key=***&q={query}&cx=***&num={num}")
+        url = f"https://www.googleapis.com/customsearch/v1?key={GOOGLE_API_KEY}&q={query}&cx={GOOGLE_CX}&num={NUM_RESULTS}"
+        print(f"请求 URL（已隐藏敏感信息）: https://www.googleapis.com/customsearch/v1?key=***&q={query}&cx=***&num={NUM_RESULTS}")
         
         response = requests.get(url)
         print(f"API 响应状态码: {response.status_code}")
@@ -539,14 +543,14 @@ async def google_search(query, num=5):
         return error_msg
 
 # 同样修改 searxng_search 函数
-async def searxng_search(query, num=10):
+async def searxng_search(query):
     print(f"开始执行 SearXNG 搜索，查询词：{query}")
     try:
         params = {
             'q': query,
             'format': 'json',
             'pageno': 1,
-            'num_results': num
+            'num_results': NUM_RESULTS
         }
         
         async with httpx.AsyncClient() as client:
@@ -555,11 +559,12 @@ async def searxng_search(query, num=10):
             
             if response.status_code == 200:
                 data = response.json()
+                print(data)
                 results = []
                 
                 if 'results' in data:
                     print(f"找到搜索结果数量: {len(data['results'])}")
-                    for i, item in enumerate(data['results'][:num], 1):
+                    for i, item in enumerate(data['results'][:-1], 1):
                         result = {
                             "title": item.get("title"),
                             "link": item.get("url"),
