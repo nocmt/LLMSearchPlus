@@ -5,5 +5,4 @@
 __pycache__
 .cursor
 searxng
-Dockerfile
 deploy_searxng.sh
