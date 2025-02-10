@@ -134,10 +134,10 @@ async def chat_completions(request: Request):
                 content = last_message.get("content", "")
                 if isinstance(content, str):
                     # 检查是否包含强制搜索标记（比如 #search 或 /search）
-                    if "#search" in content.lower() or "/search" in content.lower():
+                    if "#search" in content.lower() or "/search" in content.lower() or "#ss" in content.lower() or "/ss" in content.lower():
                         force_search = True
                         # 移除搜索标记
-                        content = content.replace("#search", "").replace("/search", "").strip()
+                        content = content.replace("#search", "").replace("/search", "").replace("#ss", "").replace("/ss", "").strip()
                         body["messages"][-1]["content"] = content
         
         modified_body = inject_tool_definitions(body)
@@ -430,9 +430,9 @@ async def fetch_and_parse_url(url, client):
     """
     try:
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36 Edg/133.0.0.0'
         }
-        response = await client.get(url, headers=headers, timeout=10.0, follow_redirects=True)
+        response = await client.get(url, headers=headers, timeout=10.0)
         
         if response.status_code != 200:
             return None
@@ -472,21 +472,22 @@ async def enrich_search_results(results):
     if isinstance(results, str):
         results = json.loads(results)
     
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(verify=False, follow_redirects=True) as client:
         tasks = []
         for result in results:
             url = result.get('link')
             if url and is_valid_url(url):
                 tasks.append(fetch_and_parse_url(url, client))
         
-        # 并发抓取所有URL
-        enriched_contents = await asyncio.gather(*tasks)
+    # 并发抓取所有URL
+    enriched_contents = await asyncio.gather(*tasks)
         
-        # 合并结果
-        for i, content in enumerate(enriched_contents):
-            if content:
-                results[i]['extracted_content'] = content.get('content', '')
-                
+    # 合并结果
+    for i, content in enumerate(enriched_contents):
+        if content:
+            results[i]['extracted_content'] = content.get('content', '')
+             
+   
     return json.dumps(results, ensure_ascii=False)
 
 def is_valid_url(url):
