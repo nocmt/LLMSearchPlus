@@ -424,46 +424,48 @@ async def handle_tool_calls(response_data, original_request):
 
     return response_data
 
-async def fetch_and_parse_url(url, client):
+async def fetch_and_parse_url(url):
     """
     抓取并解析单个URL的内容
     """
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36 Edg/133.0.0.0'
-        }
-        response = await client.get(url, headers=headers, timeout=10.0)
-        
-        if response.status_code != 200:
+    async with httpx.AsyncClient(verify=False, follow_redirects=True) as client:  # 在这里创建新的客户端实例
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36 Edg/133.0.0.0'
+            }
+            response = await client.get(url, headers=headers, timeout=10.0)
+            
+            if response.status_code != 200:
+                return None
+
+            # 使用 GNE 提取正文
+            extractor = GeneralNewsExtractor()
+            html = response.text
+            result = extractor.extract(html)
+            
+            # 提取正文内容
+            content = result.get('content', '')
+            if not content:
+                # 如果GNE提取失败，尝试使用BeautifulSoup提取所有正文
+                soup = BeautifulSoup(html, 'html.parser')
+                # 移除脚本和样式元素
+                for script in soup(["script", "style"]):
+                    script.decompose()
+                content = soup.get_text(separator='\n', strip=True)
+
+            # 清理和限制内容长度
+            content = ' '.join(content.split())
+            content = content[:2000]  # 限制长度
+            print(f"抓取{url} 内容完成")
+            return {
+                'url': url,
+                'content': content,
+                'title': result.get('title', '')
+            }
+            
+        except Exception as e:
+            print(f"抓取URL {url} 时出错: {str(e)}")
             return None
-
-        # 使用 GNE 提取正文
-        extractor = GeneralNewsExtractor()
-        html = response.text
-        result = extractor.extract(html)
-        
-        # 提取正文内容
-        content = result.get('content', '')
-        if not content:
-            # 如果GNE提取失败，尝试使用BeautifulSoup提取所有正文
-            soup = BeautifulSoup(html, 'html.parser')
-            # 移除脚本和样式元素
-            for script in soup(["script", "style"]):
-                script.decompose()
-            content = soup.get_text(separator='\n', strip=True)
-
-        # 清理和限制内容长度
-        content = ' '.join(content.split())
-        content = content[:2000]  # 限制长度
-        
-        return {
-            'url': url,
-            'content': content,
-            'title': result.get('title', '')
-        }
-    except Exception as e:
-        print(f"抓取URL {url} 时出错: {str(e)}")
-        return None
 
 async def enrich_search_results(results):
     """
@@ -471,13 +473,11 @@ async def enrich_search_results(results):
     """
     if isinstance(results, str):
         results = json.loads(results)
-    
-    async with httpx.AsyncClient(verify=False, follow_redirects=True) as client:
-        tasks = []
-        for result in results:
-            url = result.get('link')
-            if url and is_valid_url(url):
-                tasks.append(fetch_and_parse_url(url, client))
+    tasks = []
+    for result in results:
+        url = result.get('link')
+        if url and is_valid_url(url):
+            tasks.append(fetch_and_parse_url(url))
         
     # 并发抓取所有URL
     enriched_contents = await asyncio.gather(*tasks)
