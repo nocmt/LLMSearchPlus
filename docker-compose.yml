@@ -12,7 +12,7 @@ services:
       - TZ=Asia/Shanghai
       - OPENAI_BASE_URL=http://{这里要修改哈}:1234 # 指向主机的局域网IP，记得LLM要设置允许局域网访问
       - SEARCH_ENGINE=searxng # 目前只支持google、searxng
-      - NUM_RESULTS = 5
+      - NUM_RESULTS =3
       - SEARXNG_URL=http://searxng:8080 # SEARCH_ENGINE=searxng时必填
     networks:
       - llm_network # 用了桥接，则需要使用容器内端口
