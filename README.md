@@ -2,11 +2,9 @@
 
 让LLM支持联网搜索
 
-效果：[演示](./演示.mp4)
+效果：
 
-
-<video src="./演示.mp4" controls></video>
-
+![演示](./演示.gif)
 
 ## 联网搜索逻辑：
 
@@ -14,7 +12,7 @@ Chat客户端发送内容中携带 #search、/search、/ss 或 #ss 强制开启�
 
 ## 目前支持搜索引擎：
 
-- Google
+- Google ：[google custom search api 申请注册 cx key](https://blog.csdn.net/whatday/article/details/113750998)
 - SearxNG
 
 ## 本地模型服务：
@@ -24,6 +22,10 @@ Chat客户端发送内容中携带 #search、/search、/ss 或 #ss 强制开启�
 或者其他兼容OpenAI API的服务。
 
 ## 使用方法
+
+
+如果之前已经部署Searxng或者申请过谷歌搜索引擎的相关CX和KEY，那建议修改.env环境变量直接本地运行（本地运行需要python环境，建议去官网安装），否则直接用docker部署，简单快捷。
+
 
 ### 1. 本地运行
 
@@ -35,9 +37,23 @@ Chat客户端发送内容中携带 #search、/search、/ss 或 #ss 强制开启�
 
 **安装环境：**
 
-    cd LLMSearchPlus && pip install -r requirements.txt && cp .env.template .env
+    cd LLMSearchPlus
+    pip install -r requirements.txt
+    cp .env.template .env
 
 修改.env其中的配置。
+
+环境变量的含义：
+
+|  kEY   | 默认值  | 含义  |
+|  ----  | ----  | ----  |
+| SEARCH_ENGINE  | searxng |目前只支持google、searxng  |
+| OPENAI_BASE_URL  | http://127.0.0.1:1234 | 使用LM-Studio启动服务，并且打开`允许在局域网内提供服务`、`启用 CORS`。  |
+| NUM_RESULTS  | 5 |搜索返回条数，尽量避免过多内容导致超时  |
+| GOOGLE_CX  | "" |谷歌搜索CX值，SEARCH_ENGINE=google时必填  |
+| GOOGLE_API_KEY  | "" |谷歌搜索API KEY值，SEARCH_ENGINE=google时必填  |
+| SEARXNG_URL  | http://127.0.0.1:8101 |SEARCH_ENGINE=searxng时必填  |
+
 
 **运行：**
 
@@ -47,11 +63,15 @@ Chat客户端发送内容中携带 #search、/search、/ss 或 #ss 强制开启�
 在Chat客户端使用，URL填写：[http://127.0.0.1:8100](http://127.0.0.1:8100)，可能要加/v1，和使用LM Studio并没有什么区别，请自行测试确定。
 
 
+![配置](配置.png)
+
+
+
 #### 2. 使用Docker部署
 
 **修改配置文件**
 
-docker-compose.yml 文件中，需要修改LM Studio的局域网IP地址，建议和SEARXNG一起部署，这样SEARXNG的地址就是[http://searxng:8080](http://searxng:8080)，否则需要自行处理容器网络问题。
+docker-compose.yml 文件中，需要修改LM Studio的局域网IP地址(使用LM-Studio启动服务，并且打开`允许在局域网内提供服务`、`启用 CORS`)，建议和SEARXNG一起部署，这样SEARXNG的地址就是[http://searxng:8080](http://searxng:8080)，否则需要自行处理容器网络问题。
 
 
 searxng 的配置文件，具体在 `.searxng` 目录下，有一个`secret_key`需要手动生成，根据系统的不同执行命令不一样，只需要生成1次。
@@ -80,7 +100,6 @@ sed -i "s|ultrasecretkey|$(openssl rand -hex 32)|g" .searxng/settings.yml
 
 
 全部修改好后，启动服务：
-
 
 
 **启动服务：**
