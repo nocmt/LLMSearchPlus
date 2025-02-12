@@ -2,7 +2,7 @@
 
 Enable LLM with internet search capability
 
-[中文文档](./README.md) | [English](./README_EN.md)
+[中文文档](./README.md) | [Engish](./README_EN.md)
 
 Effect:
 
@@ -64,16 +64,75 @@ When using in Chat client, fill in URL: [http://127.0.0.1:8100](http://127.0.0.1
 
 ### 2. Deploy with Docker Compose
 
+
 **Modify Configuration File**
+
 
 In docker-compose.yml file, you need to modify LM Studio's LAN IP address (use LM-Studio to start service, and enable `Allow service in LAN` and `Enable CORS`). It's recommended to deploy together with SEARXNG, so SEARXNG's address will be [http://searxng:8080](http://searxng:8080), otherwise you need to handle container network issues yourself.
 
+
 For searxng's configuration file, specifically in the `.searxng` directory, there's a `secret_key` that needs to be manually generated. The command varies depending on the system, only needs to be generated once.
 
+
 Windows users can use the following powershell command to generate the key:
+
+```powershell
 
 ```powershell
 $randomBytes = New-Object byte[] 32
 (New-Object Security.Cryptography.RNGCryptoServiceProvider).GetBytes($randomBytes)
 $secretKey = -join ($randomBytes | ForEach-Object { "{0:x2}" -f $_ })
 (Get-Content .searxng/settings.yml) -replace 'ultrasecretkey', $secretKey | Set-Content .searxng/settings.yml
+```
+
+Linux, Mac users can use the following bash command to generate the key:
+
+```bash
+
+sed -i "s|ultrasecretkey|$(openssl rand -hex 32)|g" .searxng/settings.yml
+
+```
+
+This will generate a 32-bit key and automatically replace ultrasecretkey.
+
+After all modifications are done, start the service:
+
+**Start Service:**
+
+    docker compose up -d
+
+
+If it returns errors like ERROR: failed to authorize, pull the python image first then execute `docker compose up -d`。
+
+    docker pull python:3.11-slim
+
+View Logs:
+
+    docker-compose logs -f
+
+**Stop and Remove Service:**
+
+    docker-compose down
+
+
+## Others
+
+### Build Image Yourself Build Image
+
+
+**Build Image:**
+
+    docker build -t llm-search-plus .
+ 
+ 
+**Start Container:**
+
+    docker run -d -p 8100:8100 --name llm-search-plus llm-search-plus
+
+### Searxng Optimization
+
+If you find the internet search content incorrect or not comprehensive, it's recommended to modify its search engines. 
+
+Open http://localhost:8101/preferences and turn off some search engines. 
+
+For example, I only kept Bing and Google, and the results became correct.
