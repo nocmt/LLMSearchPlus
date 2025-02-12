@@ -46,7 +46,7 @@ async def get_models(request: Request):
                 headers=dict(response.headers)
             )
     except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="LM Studio API timeout")
+        raise HTTPException(status_code=504, detail="LLM API timeout")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -74,7 +74,7 @@ async def post_completions(request: Request):
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid JSON body")
     except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="LM Studio API timeout")
+        raise HTTPException(status_code=504, detail="LLM API timeout")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -102,7 +102,7 @@ async def post_embeddings(request: Request):
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid JSON body")
     except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="LM Studio API timeout")
+        raise HTTPException(status_code=504, detail="LLM API timeout")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -125,6 +125,9 @@ async def chat_completions(request: Request):
     
     try:
         body = await request.json()
+        headers = dict(request.headers)
+        headers.pop("host", None)
+        headers.pop("content-length", None)
         
         # 检查是否包含强制搜索的关键词
         force_search = False
@@ -177,22 +180,22 @@ async def chat_completions(request: Request):
         
         stream = modified_body.get("stream", False)
         
-        print("发送到 LM Studio 的请求体:", json.dumps(modified_body, ensure_ascii=False, indent=2))
+        print("发送到 LLM 的请求体:", json.dumps(modified_body, ensure_ascii=False, indent=2))
         
         # 如果是流式请求，先关闭它以处理工具调用
         if stream:
             modified_body["stream"] = False
         
-        response = await client.post(url, json=modified_body, timeout=180.0)
+        response = await client.post(url, json=modified_body, headers=headers, timeout=60.0)
         
         if response.status_code != 200:
             raise HTTPException(
                 status_code=response.status_code,
-                detail=f"LM Studio API error: {response.text}"
+                detail=f"LLM API error: {response.text}"
             )
         
         response_data = response.json()
-        print("LM Studio 原始返回数据:", json.dumps(response_data, ensure_ascii=False, indent=2))
+        print("LLM 原始返回数据:", json.dumps(response_data, ensure_ascii=False, indent=2))
         
         # 检查是否包含工具调用
         has_tool_calls = (
@@ -269,10 +272,11 @@ async def chat_completions(request: Request):
                         "stream": stream
                     }
                     
-                    print("发送最终请求到 LM Studio...")
+                    print("发送最终请求到 LLM...")
                     final_response = await client.post(
-                        f"{OPENAI_BASE_URL}/v1/chat/completions",
-                        json=new_request,
+                        url,
+                        json=new_request, 
+                        headers=headers,
                         timeout=60.0
                     )
                     
@@ -289,7 +293,7 @@ async def chat_completions(request: Request):
                     else:
                         raise HTTPException(
                             status_code=final_response.status_code,
-                            detail=f"LM Studio final response error: {final_response.text}"
+                            detail=f"LLM final response error: {final_response.text}"
                         )
             except Exception as e:
                 print(f"处理工具调用时发生错误: {str(e)}")
@@ -302,7 +306,8 @@ async def chat_completions(request: Request):
                 # 重新发送流式请求
                 stream_response = await client.post(
                     url,
-                    json={**modified_body, "stream": True},
+                    json={**modified_body, "stream": True}, 
+                    headers=headers,
                     timeout=60.0
                 )
                 return StreamingResponse(
@@ -400,7 +405,7 @@ async def handle_tool_calls(response_data, original_request):
                     "temperature": original_request.get("temperature", 0.7)
                 }
                 
-                print("发送最终请求到 LM Studio...")
+                print("发送最终请求到 LLM...")
                 # 发送最终请求
                 async with httpx.AsyncClient() as client:
                     final_response = await client.post(
@@ -411,11 +416,11 @@ async def handle_tool_calls(response_data, original_request):
                     
                     if final_response.status_code == 200:
                         result = final_response.json()
-                        print(f"LM Studio 最终响应: {json.dumps(result, ensure_ascii=False)}")
+                        print(f"LLM 最终响应: {json.dumps(result, ensure_ascii=False)}")
                         return result
                     else:
-                        print(f"LM Studio 响应错误: {final_response.status_code}")
-                        return {"error": f"LM Studio error: {final_response.text}"}
+                        print(f"LLM 响应错误: {final_response.status_code}")
+                        return {"error": f"LLM error: {final_response.text}"}
                         
             except Exception as e:
                 print(f"工具调用处理错误: {str(e)}")
