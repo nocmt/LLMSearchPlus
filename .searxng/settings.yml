@@ -11,3 +11,11 @@ search:
     formats:
         - html
         - json
+engines:
+  - name: bing
+    engine: bing
+    shortcut: bi
+    disabled: true
+  - name: google
+    engine: google
+    shortcut: go
