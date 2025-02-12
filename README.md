@@ -2,6 +2,8 @@
 
 让LLM支持联网搜索
 
+[中文文档](./README.md) | [English](./README_EN.md)
+
 效果：
 
 ![演示](./演示.gif)
@@ -45,14 +47,14 @@ Chat客户端发送内容中携带 #search、/search、/ss 或 #ss 强制开启�
 
 环境变量的含义：
 
-|  kEY   | 默认值  | 含义  |
-|  ----  | ----  | ----  |
-| SEARCH_ENGINE  | searxng |目前只支持google、searxng  |
-| OPENAI_BASE_URL  | http://127.0.0.1:1234 | 使用LM-Studio启动服务，并且打开`允许在局域网内提供服务`、`启用 CORS`。  |
-| NUM_RESULTS  | 5 |搜索返回条数，尽量避免过多内容导致超时  |
-| GOOGLE_CX  | "" |谷歌搜索CX值，SEARCH_ENGINE=google时必填  |
-| GOOGLE_API_KEY  | "" |谷歌搜索API KEY值，SEARCH_ENGINE=google时必填  |
-| SEARXNG_URL  | http://127.0.0.1:8101 |SEARCH_ENGINE=searxng时必填  |
+| kEY             | 默认值                | 含义                                                                                             |
+| --------------- | --------------------- | ------------------------------------------------------------------------------------------------ |
+| SEARCH_ENGINE   | searxng               | 目前只支持google、searxng                                                                        |
+| OPENAI_BASE_URL | http://127.0.0.1:1234 | 使用LM-Studio启动服务，并且打开`允许在局域网内提供服务`、`启用 CORS`。也支持其他的OpenAI API服务 |
+| NUM_RESULTS     | 3                     | 搜索返回条数，尽量避免过多内容导致超时                                                           |
+| GOOGLE_CX       | ""                    | 谷歌搜索CX值，SEARCH_ENGINE=google时必填                                                         |
+| GOOGLE_API_KEY  | ""                    | 谷歌搜索API KEY值，SEARCH_ENGINE=google时必填                                                    |
+| SEARXNG_URL     | http://127.0.0.1:8101 | SEARCH_ENGINE=searxng时必填                                                                      |
 
 
 **运行：**
