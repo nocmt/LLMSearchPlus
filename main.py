@@ -180,22 +180,18 @@ async def chat_completions(request: Request):
                                 search_query = optimized_query
                         
                         # 2. 执行搜索
-                        yield "data: {\"choices\":[{\"delta\":{\"content\":\"正在联网搜索相关信息...\\n\\n\"},\"finish_reason\":null,\"index\":0}]}\n\n".encode('utf-8')
+                        yield "data: {\"choices\":[{\"delta\":{\"content\":\"搜索中...\\n\\n\"},\"finish_reason\":null,\"index\":0}]}\n\n".encode('utf-8')
                         
                         search_results = await perform_search(search_query)
                         
                         # 3. 构建最终提示
                         final_messages = messages.copy()
-                        final_messages.insert(-1, {
-                            "role": "system",
-                            "content": "请基于搜索结果提供详细的回答。在回复的正文最后请按markdown格式逐行输出参考资料清单（比如：[1. 标题1](标题1的链接)。如果有思考过程，请不要显示工具调用的相关内容。"
-                        })
                         final_messages.extend([
-                            {
-                                "role": "system",
-                                "content": f"搜索结果：{search_results}"
-                            }
-                        ])
+                                            {
+                                                "role": "system",
+                                                "content": f"搜索结果：{search_results}，请基于搜索结果提供清晰明确的回答。回复内容最后必须按照markdown格式完整列出所有参考资料，格式要求：\n1. 必须包含所有搜索结果\n2. 每行一个链接\n3. 格式为：[序号. 标题](链接)\n4. 标题中如果有序号，请去除序号"
+                                            }
+                                    ])
                         
                         # 4. 发送最终请求并流式返回结果
                         async with client.stream(
@@ -272,19 +268,16 @@ async def chat_completions(request: Request):
                                 if user_messages:
                                     query = user_messages[-1]["content"]
                                     # 发送搜索提示
-                                    yield "data: {\"choices\":[{\"delta\":{\"content\":\"正在联网搜索相关信息...\\n\\n\"},\"finish_reason\":null,\"index\":0}]}\n\n".encode('utf-8')
+                                    yield "data: {\"choices\":[{\"delta\":{\"content\":\"Searching...\\n\\n\"},\"finish_reason\":null,\"index\":0}]}\n\n".encode('utf-8')
                                     
                                     search_results = await perform_search(query)
-                                    
-
                                     final_messages = modified_body["messages"].copy()
                                     final_messages.extend([
-                                        {
-                                            "role": "system",
-                                            "content": f"搜索结果：{search_results}\n\n请基于以上搜索结果回答用户问题。在回复的正文最后请按markdown格式逐行输出参考资料清单（比如：[1. 标题1](标题1的链接)）。如果有思考过程，请不要显示工具调用的相关内容。"
-                                        }
+                                            {
+                                                "role": "system",
+                                                "content": f"搜索结果：{search_results}，请基于搜索结果提供清晰明确的回答。回复内容最后必须按照markdown格式完整列出所有参考资料，格式要求：\n1. 必须包含所有搜索结果\n2. 每行一个链接\n3. 格式为：[序号. 标题](链接)\n4. 标题中如果有序号，请去除序号"
+                                            }
                                     ])
-                                    
                                     # 发送带有搜索结果的最终请求
                                     async with client.stream(
                                         "POST",
