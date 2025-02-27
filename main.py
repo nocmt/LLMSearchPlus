@@ -189,7 +189,7 @@ async def chat_completions(request: Request):
                         final_messages.extend([
                                             {
                                                 "role": "system",
-                                                "content": f"搜索结果：{search_results}，请基于搜索结果提供清晰明确的回答。回复内容最后必须按照markdown格式完整列出所有参考资料，格式要求：\n1. 必须包含所有搜索结果\n2. 每行一个链接\n3. 格式为：[序号. 标题](链接)\n4. 标题中如果有序号，请去除序号"
+                                                "content": f"搜索结果：{search_results}，请基于搜索结果提供详尽的回答。注意：\n1. 充分利用所有搜索结果的内容\n2. 确保回答全面且准确\n3. 合理组织信息，避免重复\n4. 回复内容最后必须按照markdown格式完整列出所有参考资料，格式要求：\n- 每行一个链接\n- 格式为：[序号. 标题](链接)\n- 标题中如果有序号，请去除序号"
                                             }
                                     ])
                         
@@ -275,7 +275,7 @@ async def chat_completions(request: Request):
                                     final_messages.extend([
                                             {
                                                 "role": "system",
-                                                "content": f"搜索结果：{search_results}，请基于搜索结果提供清晰明确的回答。回复内容最后必须按照markdown格式完整列出所有参考资料，格式要求：\n1. 必须包含所有搜索结果\n2. 每行一个链接\n3. 格式为：[序号. 标题](链接)\n4. 标题中如果有序号，请去除序号"
+                                                "content": f"搜索结果：{search_results}，请基于搜索结果提供详尽的回答。注意：\n1. 充分利用所有搜索结果的内容\n2. 确保回答全面且准确\n3. 合理组织信息，避免重复\n4. 回复内容最后必须按照markdown格式完整列出所有参考资料，格式要求：\n- 每行一个链接\n- 格式为：[序号. 标题](链接)\n- 标题中如果有序号，请去除序号"
                                             }
                                     ])
                                     # 发送带有搜索结果的最终请求
@@ -473,7 +473,7 @@ async def fetch_and_parse_url(url):
     """
     抓取并解析单个URL的内容
     """
-    async with httpx.AsyncClient(verify=False, follow_redirects=True) as client:  # 在这里创建新的客户端实例
+    async with httpx.AsyncClient(verify=False, follow_redirects=True) as client:
         try:
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36 Edg/133.0.0.0'
@@ -498,10 +498,9 @@ async def fetch_and_parse_url(url):
                     script.decompose()
                 content = soup.get_text(separator='\n', strip=True)
 
-            # 清理和限制内容长度
+            # 清理内容但不限制长度
             content = ' '.join(content.split())
-            content = content[:2000]  # 限制长度
-            print(f"抓取{url} 内容完成，返回结果")
+            
             return {
                 'url': url,
                 'content': content,
