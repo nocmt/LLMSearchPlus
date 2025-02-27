@@ -129,193 +129,124 @@ async def chat_completions(request: Request):
         headers.pop("host", None)
         headers.pop("content-length", None)
         
-        # 检查是否包含强制搜索的关键词
+        stream = body.get("stream", False)
+        messages = body.get("messages", [])
+        
+        # 检查是否是强制搜索
         force_search = False
-        if "messages" in body and body["messages"]:
-            last_message = body["messages"][-1]
-            if last_message.get("role") == "user":
-                content = last_message.get("content", "")
-                if isinstance(content, str):
-                    # 检查是否包含强制搜索标记（比如 #search 或 /search）
-                    if "#search" in content.lower() or "/search" in content.lower() or "#ss" in content.lower() or "/ss" in content.lower():
-                        force_search = True
-                        # 移除搜索标记
-                        content = content.replace("#search", "").replace("/search", "").replace("#ss", "").replace("/ss", "").strip()
-                        body["messages"][-1]["content"] = content
-        
-        modified_body = inject_tool_definitions(body)
-        
-        # 如果强制搜索，直接构造搜索请求
-        if force_search:
-            search_query = body["messages"][-1]["content"]
-            search_results = await perform_search(search_query)
-            
-            # 构建包含搜索结果的新消息列表
-            new_messages = body["messages"].copy()
-            tool_call_id = f"call_{str(hash(search_query))[:8]}"
-            
-            # 添加工具调用消息
-            new_messages.append({
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [{
-                    "id": tool_call_id,
-                    "type": "function",
-                    "function": {
-                        "name": f"{DEFAULT_SEARCH_ENGINE}_search",
-                        "arguments": json.dumps({"query": search_query}, ensure_ascii=False)
-                    }
-                }]
-            })
-            
-            # 添加搜索结果消息
-            new_messages.append({
-                "role": "tool",
-                "content": search_results,
-                "tool_call_id": tool_call_id,
-                "name": f"{DEFAULT_SEARCH_ENGINE}_search"
-            })
-            
-            modified_body["messages"] = new_messages
-        
-        stream = modified_body.get("stream", False)
-        
-        print("发送到 LLM 的请求体:", json.dumps(modified_body, ensure_ascii=False, indent=2))
-        
-        # 如果是流式请求，先关闭它以处理工具调用
-        if stream:
-            modified_body["stream"] = False
-        
-        response = await client.post(url, json=modified_body, headers=headers, timeout=60.0)
-        
-        if response.status_code != 200:
-            raise HTTPException(
-                status_code=response.status_code,
-                detail=f"LLM API error: {response.text}"
-            )
-        
-        response_data = response.json()
-        print("LLM 原始返回数据:", json.dumps(response_data, ensure_ascii=False, indent=2))
-        
-        # 检查是否包含工具调用
-        has_tool_calls = (
-            "choices" in response_data 
-            and response_data["choices"] 
-            and "message" in response_data["choices"][0] 
-            and "tool_calls" in response_data["choices"][0]["message"]
-        )
-        
-        has_function_calling = (
-            "choices" in response_data 
-            and response_data["choices"] 
-            and "message" in response_data["choices"][0] 
-            and "content" in response_data["choices"][0]["message"] 
-            and "<function_calling>" in response_data["choices"][0]["message"]["content"]
-        )
-        
-        if has_tool_calls or has_function_calling:
-            try:
-                query = None
-                tool_call_id = None
-                search_engine = None
+        search_query = ""
+        if messages and messages[-1]["role"] == "user":
+            content = messages[-1].get("content", "")
+            if isinstance(content, str):
+                if any(tag in content.lower() for tag in ["#search", "/search", "#ss", "/ss"]):
+                    force_search = True
+                    search_query = content
+                    for tag in ["#search", "/search", "#ss", "/ss"]:
+                        search_query = search_query.replace(tag, "").strip()
+                    messages[-1]["content"] = search_query
+
+        async def force_search_stream():
+            # 创建新的 httpx 客户端
+            async with httpx.AsyncClient() as client:
+                # 1. 先用大模型优化搜索关键词
+                optimize_messages = messages.copy()
+                optimize_messages.append({
+                    "role": "system",
+                    "content": "请帮我优化以下搜索关键词，使其更容易获得准确的搜索结果。只需要返回优化后的关键词，不需要任何解释。"
+                })
                 
-                if has_tool_calls:
-                    print("检测到标准工具调用格式")
-                    tool_call = response_data["choices"][0]["message"]["tool_calls"][0]
-                    tool_call_id = tool_call["id"]
-                    function_name = tool_call["function"]["name"]
-                    args = json.loads(tool_call["function"]["arguments"])
-                    query = args["query"]
-                    search_engine = function_name.replace("_search", "")
-                elif has_function_calling:
-                    print("检测到特殊函数调用格式")
-                    content = response_data["choices"][0]["message"]["content"]
-                    json_str = content.split("<function_calling>")[1].strip()
-                    function_data = json.loads(json_str)
-                    query = function_data["params"]["query"]
-                    tool_call_id = f"call_{str(hash(content))[:8]}"
-                    search_engine = DEFAULT_SEARCH_ENGINE
-                
-                print(f"使用搜索引擎: {search_engine}")  # 添加调试日志
-                
-                if query:
-                    search_results = await perform_search(query, search_engine)
-                    print(f"搜索结果: {search_results}")
-                    
-                    # 构建新的消息列表
-                    new_messages = modified_body["messages"].copy()
-                    tool_call = {
-                        "id": tool_call_id,
-                        "type": "function",
-                        "function": {
-                            "name": f"{search_engine}_search",
-                            "arguments": json.dumps({"query": query}, ensure_ascii=False)
-                        }
-                    }
-                    
-                    new_messages.append({
-                        "role": "assistant",
-                        "content": None,
-                        "tool_calls": [tool_call]
-                    })
-                    new_messages.append({
-                        "role": "tool",
-                        "content": search_results,
-                        "tool_call_id": tool_call_id,
-                        "name": f"{search_engine}_search"
-                    })
-                    
-                    # 构建新的请求
-                    new_request = {
-                        "model": modified_body.get("model", "gpt-3.5-turbo"),
-                        "messages": new_messages,
-                        "stream": stream
-                    }
-                    
-                    print("发送最终请求到 LLM...")
-                    final_response = await client.post(
-                        url,
-                        json=new_request, 
-                        headers=headers,
-                        timeout=60.0
-                    )
-                    
-                    if final_response.status_code == 200:
-                        if stream:
-                            return StreamingResponse(
-                                final_response.aiter_bytes(),
-                                media_type="text/event-stream"
-                            )
-                        else:
-                            final_result = final_response.json()
-                            print("最终响应:", json.dumps(final_result, ensure_ascii=False, indent=2))
-                            return final_result
-                    else:
-                        raise HTTPException(
-                            status_code=final_response.status_code,
-                            detail=f"LLM final response error: {final_response.text}"
-                        )
-            except Exception as e:
-                print(f"处理工具调用时发生错误: {str(e)}")
-                print(f"错误堆栈: {traceback.format_exc()}")
-                raise HTTPException(status_code=500, detail=str(e))
-        
-        # 修改这部分：确保在没有工具调用时也能正确返回响应
-        if not (has_tool_calls or has_function_calling):
-            if stream:
-                # 重新发送流式请求
-                stream_response = await client.post(
+                nonlocal search_query
+                response = await client.post(
                     url,
-                    json={**modified_body, "stream": True}, 
+                    json={"messages": optimize_messages, "stream": False},
                     headers=headers,
                     timeout=60.0
                 )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    if "choices" in result and result["choices"]:
+                        optimized_query = result["choices"][0]["message"]["content"].strip()
+                        search_query = optimized_query
+                
+                # 2. 执行搜索
+                yield "data: {\"choices\":[{\"delta\":{\"content\":\"> 正在联网搜索相关信息...\\n\\n\"},\"finish_reason\":null,\"index\":0}]}\n\n".encode('utf-8')
+                
+                search_results = await perform_search(search_query)
+                
+                # 3. 构建最终提示
+                final_messages = messages.copy()
+                final_messages.insert(-1, {
+                    "role": "system",
+                    "content": "请基于搜索结果提供详细的回答。在回答的最后，请列出参考资料清单。如果有思考过程，请直接执行工具且不要显示工具调用的相关内容。"
+                })
+                final_messages.extend([
+                    {
+                        "role": "system",
+                        "content": f"搜索结果：{search_results}"
+                    }
+                ])
+                
+                # 4. 发送最终请求并流式返回结果
+                async with client.stream(
+                    "POST",
+                    url,
+                    json={"messages": final_messages, "stream": True},
+                    headers=headers,
+                    timeout=60.0
+                ) as response:
+                    async for chunk in response.aiter_bytes():
+                        yield chunk
+
+        if force_search:
+            # 情况1：强制搜索流程
+            if stream:
                 return StreamingResponse(
-                    stream_response.aiter_bytes(),
-                    media_type="text/event-stream"
+                    force_search_stream(),
+                    media_type="text/event-stream",
+                    headers={
+                        "Content-Type": "text/event-stream",
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                    }
                 )
-            return response_data
-        
+            else:
+                # 非流式强制搜索处理
+                async with httpx.AsyncClient() as client:
+                    # ... 非流式处理代码 ...
+                    pass
+        else:
+            # 情况2：自动判断是否需要搜索
+            modified_body = inject_tool_definitions(body)
+            
+            # 直接执行搜索而不等待模型响应
+            if stream:
+                # 获取用户原始问题
+                user_messages = [msg for msg in modified_body["messages"] if msg["role"] == "user"]
+                if not user_messages:
+                    raise ValueError("未找到用户问题")
+                
+                query = user_messages[-1]["content"]
+                
+                # 直接执行搜索流程
+                return StreamingResponse(
+                    force_search_stream(),  # 重用强制搜索的流程
+                    media_type="text/event-stream",
+                    headers={
+                        "Content-Type": "text/event-stream",
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                    }
+                )
+            else:
+                final_response = await client.post(
+                    url,
+                    json=modified_body,
+                    headers=headers,
+                    timeout=60.0
+                )
+                return final_response.json()
+                
     except Exception as e:
         print(f"发生异常: {str(e)}")
         print(f"异常堆栈: {traceback.format_exc()}")
@@ -323,6 +254,94 @@ async def chat_completions(request: Request):
     finally:
         await client.aclose()
 
+async def needs_tool_call(response_data):
+    """检查响应是否需要工具调用"""
+    if "choices" not in response_data or not response_data["choices"]:
+        return False
+        
+    choice = response_data["choices"][0]
+    
+    # 检查标准工具调用格式
+    if "message" in choice:
+        if "tool_calls" in choice["message"]:
+            return True
+            
+        # 检查消息内容中是否包含工具调用标记
+        if "content" in choice["message"]:
+            content = choice["message"]["content"].lower()
+            return "[tool_request" in content
+                
+    return False
+
+async def handle_tool_call(response_data, original_body):
+    """处理工具调用并返回新的消息"""
+    try:
+        # 获取用户原始问题作为查询
+        user_messages = [msg for msg in original_body["messages"] if msg["role"] == "user"]
+        if not user_messages:
+            raise ValueError("未找到用户问题")
+            
+        query = user_messages[-1]["content"]
+        tool_call_id = f"call_{str(hash(query))[:8]}"
+        search_engine = DEFAULT_SEARCH_ENGINE
+        
+        print(f"执行搜索，引擎：{search_engine}，查询：{query}")
+        search_results = await perform_search(query, search_engine)
+        
+        # 构建工具调用消息
+        tool_messages = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": tool_call_id,
+                    "type": "function",
+                    "function": {
+                        "name": f"{search_engine}_search",
+                        "arguments": json.dumps({"query": query}, ensure_ascii=False)
+                    }
+                }]
+            },
+            {
+                "role": "tool",
+                "content": search_results,
+                "tool_call_id": tool_call_id,
+                "name": f"{search_engine}_search"
+            }
+        ]
+        
+        return tool_messages
+        
+    except Exception as e:
+        print(f"处理工具调用时出错: {str(e)}")
+        print(f"响应数据: {json.dumps(response_data, ensure_ascii=False, indent=2)}")
+        raise
+
+async def construct_messages_with_search(messages, query, search_results):
+    """构建包含搜索结果的消息列表"""
+    tool_call_id = f"call_{str(hash(query))[:8]}"
+    new_messages = messages.copy()
+    new_messages.extend([
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": tool_call_id,
+                "type": "function",
+                "function": {
+                    "name": f"{DEFAULT_SEARCH_ENGINE}_search",
+                    "arguments": json.dumps({"query": query}, ensure_ascii=False)
+                }
+            }]
+        },
+        {
+            "role": "tool",
+            "content": search_results,
+            "tool_call_id": tool_call_id,
+            "name": f"{DEFAULT_SEARCH_ENGINE}_search"
+        }
+    ])
+    return new_messages
 
 def inject_tool_definitions(original_body):
     tools = []
@@ -363,71 +382,6 @@ def inject_tool_definitions(original_body):
     original_body["tools"].extend(tools)
     original_body["tool_choice"] = "auto"
     return original_body
-
-async def handle_tool_calls(response_data, original_request):
-    print("开始处理工具调用...")
-    if "choices" not in response_data:
-        return response_data
-
-    choice = response_data["choices"][0]
-    if not choice.get("message", {}).get("tool_calls"):
-        return response_data
-
-    # 处理每个工具调用
-    for tool_call in choice["message"]["tool_calls"]:
-        if tool_call["function"]["name"] == "google_search":
-            try:
-                print("执行 Google 搜索工具调用...")
-                args = json.loads(tool_call["function"]["arguments"])
-                search_results = await google_search(args["query"])
-                print(f"搜索结果: {search_results}")
-                
-                # 构建新的请求
-                new_messages = original_request["messages"].copy()
-                # 添加助手的工具调用消息
-                new_messages.append({
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [tool_call]
-                })
-                # 添加工具的响应消息
-                new_messages.append({
-                    "role": "tool",
-                    "content": search_results,
-                    "tool_call_id": tool_call["id"],
-                    "name": "google_search"
-                })
-                
-                # 创建新的请求体，移除工具定义以避免循环调用
-                new_request = {
-                    "model": original_request.get("model", "gpt-3.5-turbo"),
-                    "messages": new_messages,
-                    "temperature": original_request.get("temperature", 0.7)
-                }
-                
-                print("发送最终请求到 LLM...")
-                # 发送最终请求
-                async with httpx.AsyncClient() as client:
-                    final_response = await client.post(
-                        f"{OPENAI_BASE_URL}/v1/chat/completions",
-                        json=new_request,
-                        timeout=60.0
-                    )
-                    
-                    if final_response.status_code == 200:
-                        result = final_response.json()
-                        print(f"LLM 最终响应: {json.dumps(result, ensure_ascii=False)}")
-                        return result
-                    else:
-                        print(f"LLM 响应错误: {final_response.status_code}")
-                        return {"error": f"LLM error: {final_response.text}"}
-                        
-            except Exception as e:
-                print(f"工具调用处理错误: {str(e)}")
-                print(f"错误堆栈: {traceback.format_exc()}")
-                return {"error": f"Tool call error: {str(e)}"}
-
-    return response_data
 
 async def fetch_and_parse_url(url):
     """
@@ -511,42 +465,92 @@ def is_valid_url(url):
         return False
 
 # 修改 google_search 函数
-async def google_search(query):
-    print(f"开始执行 Google 搜索，查询词：{query}")
+async def google_search(query: str) -> str:
+    """执行 Google 搜索"""
     try:
-        url = f"https://www.googleapis.com/customsearch/v1?key={GOOGLE_API_KEY}&q={query}&cx={GOOGLE_CX}&num={NUM_RESULTS}"
-        print(f"请求 URL（已隐藏敏感信息）: https://www.googleapis.com/customsearch/v1?key=***&q={query}&cx=***&num={NUM_RESULTS}")
+        print(f"开始执行 Google 搜索，查询词：{query}")
         
-        response = requests.get(url)
-        print(f"API 响应状态码: {response.status_code}")
+        url = "https://www.googleapis.com/customsearch/v1"
+        params = {
+            "key": GOOGLE_API_KEY,
+            "cx": GOOGLE_CX,
+            "q": query,
+            "num": NUM_RESULTS
+        }
         
-        if response.status_code == 200:
-            data = response.json()
-            results = []
-            if 'items' in data:
-                print(f"找到搜索结果数量: {len(data['items'])}")
-                for i, item in enumerate(data['items'], 1):
-                    result = {
-                        "title": item.get("title"),
-                        "link": item.get("link"),
-                        "snippet": item.get("snippet")
-                    }
-                    results.append(result)
-                    print(f"处理第 {i} 条结果: {result['title']}")
+        print(f"请求 URL（已隐藏敏感信息）: {url}?key=***&q={query}&cx=***&num={NUM_RESULTS}")
+        
+        # 配置 SSL 验证和重试策略
+        session = requests.Session()
+        retry_strategy = requests.adapters.Retry(
+            total=3,  # 总重试次数
+            backoff_factor=1,  # 重试间隔
+            status_forcelist=[429, 500, 502, 503, 504],  # 需要重试的状态码
+        )
+        adapter = requests.adapters.HTTPAdapter(
+            max_retries=retry_strategy,
+            pool_connections=100,
+            pool_maxsize=100
+        )
+        session.mount("https://", adapter)
+        
+        # 发送请求
+        response = session.get(
+            url,
+            params=params,
+            timeout=30,
+            verify=True  # 使用系统的证书验证
+        )
+        
+        response.raise_for_status()
+        results = response.json()
+        
+        if "items" not in results:
+            return "未找到相关搜索结果。"
+        
+        formatted_results = []
+        for item in results["items"]:
+            title = item.get("title", "")
+            snippet = item.get("snippet", "")
+            link = item.get("link", "")
+            formatted_results.append(f"标题：{title}\n摘要：{snippet}\n链接：{link}\n")
+        
+        return "\n".join(formatted_results)
+        
+    except requests.exceptions.SSLError as e:
+        print(f"SSL错误：{str(e)}")
+        # 尝试不验证 SSL 证书重试一次
+        try:
+            session = requests.Session()
+            response = session.get(
+                url,
+                params=params,
+                timeout=30,
+                verify=False  # 禁用 SSL 验证
+            )
+            response.raise_for_status()
+            results = response.json()
             
-            # 增强搜索结果
-            enriched_results = await enrich_search_results(results)
-            print(f"完成内容增强，返回结果")
-            return enriched_results
-        else:
-            error_msg = f"搜索请求失败，状态码: {response.status_code}"
-            print(error_msg)
-            return error_msg
+            if "items" not in results:
+                return "未找到相关搜索结果。"
+            
+            formatted_results = []
+            for item in results["items"]:
+                title = item.get("title", "")
+                snippet = item.get("snippet", "")
+                link = item.get("link", "")
+                formatted_results.append(f"标题：{title}\n摘要：{snippet}\n链接：{link}\n")
+            
+            return "\n".join(formatted_results)
+            
+        except Exception as retry_e:
+            print(f"重试失败：{str(retry_e)}")
+            return f"搜索过程发生异常：{str(e)}"
+            
     except Exception as e:
-        error_msg = f"搜索过程发生异常：{str(e)}"
-        print(f"错误：{error_msg}")
+        print(f"错误：搜索过程发生异常：{str(e)}")
         print(f"异常堆栈：{traceback.format_exc()}")
-        return error_msg
+        return f"搜索过程发生异常：{str(e)}"
 
 # 同样修改 searxng_search 函数
 async def searxng_search(query):
