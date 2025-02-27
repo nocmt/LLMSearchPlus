@@ -120,7 +120,6 @@ async def perform_search(query, engine=None):
 
 @app.api_route("/v1/chat/completions", methods=["POST"])
 async def chat_completions(request: Request):
-    client = httpx.AsyncClient()
     url = f"{OPENAI_BASE_URL}/v1/chat/completions"
     
     try:
@@ -145,62 +144,62 @@ async def chat_completions(request: Request):
                         search_query = search_query.replace(tag, "").strip()
                     messages[-1]["content"] = search_query
 
-        async def force_search_stream():
-            # 创建新的 httpx 客户端
-            async with httpx.AsyncClient() as client:
-                # 1. 先用大模型优化搜索关键词
-                optimize_messages = messages.copy()
-                optimize_messages.append({
-                    "role": "system",
-                    "content": "请帮我优化以下搜索关键词，使其更容易获得准确的搜索结果。只需要返回优化后的关键词，不需要任何解释。"
-                })
-                
-                nonlocal search_query
-                response = await client.post(
-                    url,
-                    json={"messages": optimize_messages, "stream": False},
-                    headers=headers,
-                    timeout=60.0
-                )
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    if "choices" in result and result["choices"]:
-                        optimized_query = result["choices"][0]["message"]["content"].strip()
-                        search_query = optimized_query
-                
-                # 2. 执行搜索
-                yield "data: {\"choices\":[{\"delta\":{\"content\":\"> 正在联网搜索相关信息...\\n\\n\"},\"finish_reason\":null,\"index\":0}]}\n\n".encode('utf-8')
-                
-                search_results = await perform_search(search_query)
-                
-                # 3. 构建最终提示
-                final_messages = messages.copy()
-                final_messages.insert(-1, {
-                    "role": "system",
-                    "content": "请基于搜索结果提供详细的回答。在回答的最后，请列出参考资料清单。如果有思考过程，请直接执行工具且不要显示工具调用的相关内容。"
-                })
-                final_messages.extend([
-                    {
-                        "role": "system",
-                        "content": f"搜索结果：{search_results}"
-                    }
-                ])
-                
-                # 4. 发送最终请求并流式返回结果
-                async with client.stream(
-                    "POST",
-                    url,
-                    json={"messages": final_messages, "stream": True},
-                    headers=headers,
-                    timeout=60.0
-                ) as response:
-                    async for chunk in response.aiter_bytes():
-                        yield chunk
-
         if force_search:
             # 情况1：强制搜索流程
             if stream:
+                async def force_search_stream():
+                    # 创建新的 httpx 客户端
+                    async with httpx.AsyncClient() as client:
+                        # 1. 先用大模型优化搜索关键词
+                        optimize_messages = messages.copy()
+                        optimize_messages.append({
+                            "role": "system",
+                            "content": "请帮我优化以下搜索关键词，使其更容易获得准确的搜索结果。只需要返回优化后的关键词，不需要任何解释。"
+                        })
+                        
+                        nonlocal search_query
+                        response = await client.post(
+                            url,
+                            json={"messages": optimize_messages, "stream": False},
+                            headers=headers,
+                            timeout=60.0
+                        )
+                        
+                        if response.status_code == 200:
+                            result = response.json()
+                            if "choices" in result and result["choices"]:
+                                optimized_query = result["choices"][0]["message"]["content"].strip()
+                                search_query = optimized_query
+                        
+                        # 2. 执行搜索
+                        yield "data: {\"choices\":[{\"delta\":{\"content\":\"正在联网搜索相关信息...\\n\\n\"},\"finish_reason\":null,\"index\":0}]}\n\n".encode('utf-8')
+                        
+                        search_results = await perform_search(search_query)
+                        
+                        # 3. 构建最终提示
+                        final_messages = messages.copy()
+                        final_messages.insert(-1, {
+                            "role": "system",
+                            "content": "请基于搜索结果提供详细的回答。在回答的最后，请列出参考资料清单。如果有思考过程，请直接执行工具且不要显示工具调用的相关内容。"
+                        })
+                        final_messages.extend([
+                            {
+                                "role": "system",
+                                "content": f"搜索结果：{search_results}"
+                            }
+                        ])
+                        
+                        # 4. 发送最终请求并流式返回结果
+                        async with client.stream(
+                            "POST",
+                            url,
+                            json={"messages": final_messages, "stream": True},
+                            headers=headers,
+                            timeout=60.0
+                        ) as response:
+                            async for chunk in response.aiter_bytes():
+                                yield chunk
+
                 return StreamingResponse(
                     force_search_stream(),
                     media_type="text/event-stream",
@@ -216,21 +215,88 @@ async def chat_completions(request: Request):
                     # ... 非流式处理代码 ...
                     pass
         else:
-            # 情况2：自动判断是否需要搜索
+            # 情况2：让模型判断是否需要搜索
             modified_body = inject_tool_definitions(body)
             
-            # 直接执行搜索而不等待模型响应
             if stream:
-                # 获取用户原始问题
-                user_messages = [msg for msg in modified_body["messages"] if msg["role"] == "user"]
-                if not user_messages:
-                    raise ValueError("未找到用户问题")
+                async def process_stream():
+                    client = httpx.AsyncClient()
+                    try:
+                        # 第一次请求：让模型判断是否需要搜索
+                        async with client.stream(
+                            "POST",
+                            url,
+                            json=modified_body,
+                            headers=headers,
+                            timeout=60.0
+                        ) as response:
+                            need_search = False
+                            tool_calls_buffer = []
+                            content_buffer = []
+                            
+                            async for chunk in response.aiter_bytes():
+                                try:
+                                    chunk_str = chunk.decode('utf-8')
+                                    if not chunk_str.strip() or chunk_str.strip() == "data: [DONE]":
+                                        continue
+                                        
+                                    if chunk_str.startswith('data: '):
+                                        data = json.loads(chunk_str[6:])
+                                        if "choices" in data and data["choices"]:
+                                            choice = data["choices"][0]
+                                            
+                                            # 检查是否有工具调用
+                                            if "delta" in choice:
+                                                delta = choice["delta"]
+                                                if "tool_calls" in delta:
+                                                    need_search = True
+                                                    tool_calls_buffer.append(chunk)
+                                                    continue
+                                                elif "content" in delta:
+                                                    content_buffer.append(chunk)
+                                                    
+                                except Exception as e:
+                                    print(f"处理流数据时出错: {str(e)}")
+                                    continue
+                            
+                            # 如果需要搜索
+                            if need_search:
+                                user_messages = [msg for msg in modified_body["messages"] if msg["role"] == "user"]
+                                if user_messages:
+                                    query = user_messages[-1]["content"]
+                                    yield "data: {\"choices\":[{\"delta\":{\"content\":\"正在联网搜索相关信息...\\n\\n\"},\"finish_reason\":null,\"index\":0}]}\n\n".encode('utf-8')
+                                    
+                                    search_results = await perform_search(query)
+                                    
+                                    final_messages = modified_body["messages"].copy()
+                                    final_messages.extend([
+                                        {
+                                            "role": "system",
+                                            "content": f"搜索结果：{search_results}\n\n请基于以上搜索结果回答用户问题，在回答的最后列出参考资料。"
+                                        }
+                                    ])
+                                    
+                                    # 发送带有搜索结果的最终请求
+                                    async with client.stream(
+                                        "POST",
+                                        url,
+                                        json={"messages": final_messages, "stream": True},
+                                        headers=headers,
+                                        timeout=60.0
+                                    ) as final_response:
+                                        async for final_chunk in final_response.aiter_bytes():
+                                            yield final_chunk
+                            else:
+                                # 如果不需要搜索，返回原始内容
+                                for chunk in content_buffer:
+                                    yield chunk
+                                yield b"data: [DONE]\n\n"
+                                    
+                    finally:
+                        await client.aclose()
                 
-                query = user_messages[-1]["content"]
-                
-                # 直接执行搜索流程
                 return StreamingResponse(
-                    force_search_stream(),  # 重用强制搜索的流程
+                    process_stream(),
                     media_type="text/event-stream",
                     headers={
                         "Content-Type": "text/event-stream",
@@ -239,20 +305,37 @@ async def chat_completions(request: Request):
                     }
                 )
             else:
-                final_response = await client.post(
-                    url,
-                    json=modified_body,
-                    headers=headers,
-                    timeout=60.0
-                )
-                return final_response.json()
-                
+                # 非流式请求处理
+                async with httpx.AsyncClient() as client:  # 非流式请求使用上下文管理器
+                    response = await client.post(
+                        url,
+                        json=modified_body,
+                        headers=headers,
+                        timeout=60.0
+                    )
+                    
+                    response_data = response.json()
+                    
+                    if await needs_tool_call(response_data):
+                        tool_messages = await handle_tool_call(response_data, modified_body)
+                        
+                        final_messages = modified_body["messages"].copy()
+                        final_messages.extend(tool_messages)
+                        
+                        final_response = await client.post(
+                            url,
+                            json={"messages": final_messages},
+                            headers=headers,
+                            timeout=60.0
+                        )
+                        return final_response.json()
+                    
+                    return response_data
+
     except Exception as e:
         print(f"发生异常: {str(e)}")
         print(f"异常堆栈: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        await client.aclose()
 
 async def needs_tool_call(response_data):
     """检查响应是否需要工具调用"""
