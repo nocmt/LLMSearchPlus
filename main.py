@@ -123,7 +123,15 @@ async def chat_completions(request: Request):
     url = f"{OPENAI_BASE_URL}/v1/chat/completions"
     
     try:
-        body = await request.json()
+        # 添加错误处理的日志
+        request_body = await request.body()
+        try:
+            body = json.loads(request_body)
+        except json.JSONDecodeError as e:
+            print(f"JSON 解析错误: {str(e)}")
+            print(f"原始请求体: {request_body}")
+            raise HTTPException(status_code=400, detail=f"无效的 JSON 格式: {str(e)}")
+
         headers = dict(request.headers)
         headers.pop("host", None)
         headers.pop("content-length", None)
@@ -180,7 +188,7 @@ async def chat_completions(request: Request):
                         final_messages = messages.copy()
                         final_messages.insert(-1, {
                             "role": "system",
-                            "content": "请基于搜索结果提供详细的回答。在回答的最后，请列出参考资料清单。如果有思考过程，请直接执行工具且不要显示工具调用的相关内容。"
+                            "content": "请基于搜索结果提供详细的回答。在回复的正文最后请按markdown格式逐行输出参考资料清单（比如：[1. 标题1](标题1的链接)。如果有思考过程，请不要显示工具调用的相关内容。"
                         })
                         final_messages.extend([
                             {
@@ -222,7 +230,6 @@ async def chat_completions(request: Request):
                 async def process_stream():
                     client = httpx.AsyncClient()
                     try:
-                        # 第一次请求：让模型判断是否需要搜索
                         async with client.stream(
                             "POST",
                             url,
@@ -264,15 +271,17 @@ async def chat_completions(request: Request):
                                 user_messages = [msg for msg in modified_body["messages"] if msg["role"] == "user"]
                                 if user_messages:
                                     query = user_messages[-1]["content"]
+                                    # 发送搜索提示
                                     yield "data: {\"choices\":[{\"delta\":{\"content\":\"正在联网搜索相关信息...\\n\\n\"},\"finish_reason\":null,\"index\":0}]}\n\n".encode('utf-8')
                                     
                                     search_results = await perform_search(query)
                                     
+
                                     final_messages = modified_body["messages"].copy()
                                     final_messages.extend([
                                         {
                                             "role": "system",
-                                            "content": f"搜索结果：{search_results}\n\n请基于以上搜索结果回答用户问题，在回答的最后列出参考资料。"
+                                            "content": f"搜索结果：{search_results}\n\n请基于以上搜索结果回答用户问题。在回复的正文最后请按markdown格式逐行输出参考资料清单（比如：[1. 标题1](标题1的链接)）。如果有思考过程，请不要显示工具调用的相关内容。"
                                         }
                                     ])
                                     
@@ -335,6 +344,7 @@ async def chat_completions(request: Request):
     except Exception as e:
         print(f"发生异常: {str(e)}")
         print(f"异常堆栈: {traceback.format_exc()}")
+
         raise HTTPException(status_code=500, detail=str(e))
 
 async def needs_tool_call(response_data):
@@ -498,7 +508,7 @@ async def fetch_and_parse_url(url):
             # 清理和限制内容长度
             content = ' '.join(content.split())
             content = content[:2000]  # 限制长度
-            print(f"抓取{url} 内容完成")
+            print(f"抓取{url} 内容完成，返回结果")
             return {
                 'url': url,
                 'content': content,
@@ -548,92 +558,42 @@ def is_valid_url(url):
         return False
 
 # 修改 google_search 函数
-async def google_search(query: str) -> str:
-    """执行 Google 搜索"""
+async def google_search(query):
+    print(f"开始执行 Google 搜索，查询词：{query}")
     try:
-        print(f"开始执行 Google 搜索，查询词：{query}")
+        url = f"https://www.googleapis.com/customsearch/v1?key={GOOGLE_API_KEY}&q={query}&cx={GOOGLE_CX}&num={NUM_RESULTS}"
+        print(f"请求 URL（已隐藏敏感信息）: https://www.googleapis.com/customsearch/v1?key=***&q={query}&cx=***&num={NUM_RESULTS}")
         
-        url = "https://www.googleapis.com/customsearch/v1"
-        params = {
-            "key": GOOGLE_API_KEY,
-            "cx": GOOGLE_CX,
-            "q": query,
-            "num": NUM_RESULTS
-        }
+        response = requests.get(url)
+        print(f"API 响应状态码: {response.status_code}")
         
-        print(f"请求 URL（已隐藏敏感信息）: {url}?key=***&q={query}&cx=***&num={NUM_RESULTS}")
-        
-        # 配置 SSL 验证和重试策略
-        session = requests.Session()
-        retry_strategy = requests.adapters.Retry(
-            total=3,  # 总重试次数
-            backoff_factor=1,  # 重试间隔
-            status_forcelist=[429, 500, 502, 503, 504],  # 需要重试的状态码
-        )
-        adapter = requests.adapters.HTTPAdapter(
-            max_retries=retry_strategy,
-            pool_connections=100,
-            pool_maxsize=100
-        )
-        session.mount("https://", adapter)
-        
-        # 发送请求
-        response = session.get(
-            url,
-            params=params,
-            timeout=30,
-            verify=True  # 使用系统的证书验证
-        )
-        
-        response.raise_for_status()
-        results = response.json()
-        
-        if "items" not in results:
-            return "未找到相关搜索结果。"
-        
-        formatted_results = []
-        for item in results["items"]:
-            title = item.get("title", "")
-            snippet = item.get("snippet", "")
-            link = item.get("link", "")
-            formatted_results.append(f"标题：{title}\n摘要：{snippet}\n链接：{link}\n")
-        
-        return "\n".join(formatted_results)
-        
-    except requests.exceptions.SSLError as e:
-        print(f"SSL错误：{str(e)}")
-        # 尝试不验证 SSL 证书重试一次
-        try:
-            session = requests.Session()
-            response = session.get(
-                url,
-                params=params,
-                timeout=30,
-                verify=False  # 禁用 SSL 验证
-            )
-            response.raise_for_status()
-            results = response.json()
+        if response.status_code == 200:
+            data = response.json()
+            results = []
+            if 'items' in data:
+                print(f"找到搜索结果数量: {len(data['items'])}")
+                for i, item in enumerate(data['items'], 1):
+                    result = {
+                        "title": item.get("title"),
+                        "link": item.get("link"),
+                        "snippet": item.get("snippet")
+                    }
+                    results.append(result)
+                    print(f"处理第 {i} 条结果: {result['title']}")
             
-            if "items" not in results:
-                return "未找到相关搜索结果。"
-            
-            formatted_results = []
-            for item in results["items"]:
-                title = item.get("title", "")
-                snippet = item.get("snippet", "")
-                link = item.get("link", "")
-                formatted_results.append(f"标题：{title}\n摘要：{snippet}\n链接：{link}\n")
-            
-            return "\n".join(formatted_results)
-            
-        except Exception as retry_e:
-            print(f"重试失败：{str(retry_e)}")
-            return f"搜索过程发生异常：{str(e)}"
-            
+            # 增强搜索结果
+            enriched_results = await enrich_search_results(results)
+            print(f"完成内容增强，返回结果")
+            return enriched_results
+        else:
+            error_msg = f"搜索请求失败，状态码: {response.status_code}"
+            print(error_msg)
+            return error_msg
     except Exception as e:
-        print(f"错误：搜索过程发生异常：{str(e)}")
+        error_msg = f"搜索过程发生异常：{str(e)}"
+        print(f"错误：{error_msg}")
         print(f"异常堆栈：{traceback.format_exc()}")
-        return f"搜索过程发生异常：{str(e)}"
+        return error_msg
 
 # 同样修改 searxng_search 函数
 async def searxng_search(query):
@@ -683,6 +643,7 @@ async def searxng_search(query):
         print(f"错误：{error_msg}")
         print(f"异常堆栈：{traceback.format_exc()}")
         return error_msg
-    
+
+
 if __name__ == "__main__":
     uvicorn.run("main:app", host="127.0.0.1", port=8100, reload=True)
